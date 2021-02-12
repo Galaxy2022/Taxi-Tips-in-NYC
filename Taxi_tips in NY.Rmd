@@ -1,0 +1,196 @@
+---
+title: "NY Taxi Tips Analysis"
+author: "Maysam Mansor"
+date: "2/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#
+#set up working directory- loading dataset- head and view of the dataset
+setwd("C:/Users/18322/Desktop/visualization/week6")
+taxi_tips=read.csv("green_tripdata_2015-09.csv", header = TRUE)
+head(taxi_tips)
+#View(taxi_tips)
+```
+
+```{r}
+#recalling libraries required
+library(tigris)
+library(dplyr)
+library(leaflet)
+library(sp)
+library(ggmap)
+library(maptools)
+library(broom)
+library(httr)
+library(rgdal)
+library(tidyverse)
+
+```
+
+```{r}
+#order the values in the column and avoid none zero data 
+taxi_tips<-taxi_tips[order(-taxi_tips$Tip_amount),]
+
+taxi_tips_pos<-taxi_tips[taxi_tips$Tip_amount >0,]
+```
+
+```{r}
+#get NY coordination file and layers into  vector object 
+r <- GET('http://data.beta.nyc//dataset/0ff93d2d-90ba-457c-9f7e-39e47bf2ac5f/resource/35dd04fb-81b3-479b-a074-a27a37888ce7/download/d085e2f8d0b54d4590b1e7d1f35594c1pediacitiesnycneighborhoods.geojson')
+
+#reading nyc neighborhoods from the geojson file  
+nyc_neighborhoods <- readOGR(content(r,'text'), 'OGRGeoJSON', verbose = F)
+
+#summary(nyc_neighborhoods)
+
+#head(nyc_neighborhoods)
+```
+
+```{r}
+#putting neighborhoods data into tidy data structure 
+nyc_neighborhoods_df <- tidy(nyc_neighborhoods)
+#selecting three columns for data analysis  
+taxi_tips<-taxi_tips[, c("Pickup_latitude", "Pickup_longitude", "Tip_amount")]
+#make the selected columns numerical type
+lats <- as.numeric(taxi_tips$Pickup_latitude)
+lngs <- as.numeric(taxi_tips$Pickup_longitude)
+```
+
+```{r}
+#making a dataframe  
+tips <- taxi_tips$Tip_amount
+points <- data.frame(lat=lats, lng=lngs, tips = tips)
+#points
+```
+
+```{r}
+#convert the points data frame to a spatial data frame
+#The coordinates function specifies which columns should be used for positioning, and the proj4string function specifies what type of projection should be used
+#bind columns back together 
+points_spdf <- points
+coordinates(points_spdf) <- ~lng + lat
+proj4string(points_spdf) <- proj4string(nyc_neighborhoods)
+matches <- over(points_spdf, nyc_neighborhoods)
+points <- cbind(points, matches)
+#points
+```
+
+
+```{r}
+#removing missing points from the dframe and group it based on neighborhoods
+points_na_rm<-remove_missing(points)
+taxi_tips_pos<-points_na_rm[points_na_rm$tips >0,]
+tipsdf<- taxi_tips_pos %>% group_by(neighborhood)
+```
+1-One Way of extracting map is to get it from ggmap
+```{r}
+
+# #Make basic maps with ggmap by specifying a location (as a string or by lat/long) and zoom level. 
+# #The geocode function is used to convert a string to lat/long behind the scenes and tiles are pulled from Google maps.
+# #USE AIP keys for get the map loaded here
+# register_google (key = 'AIzaSyBRK0icTi-KEefj5qFoa4DiUHfSnPCy3vQ', signature = 'rX6ywsF8QcfKh-G5bG3Nm_6A8IQ=')
+# 
+# nyc_map <- get_map(location = c(lon = -74.00, lat = 40.71), maptype = "terrain", zoom = 11)
+# 
+# ggmap(nyc_map)
+# leaflet() %>%
+#   addTiles() %>%
+#   setView(-74.00, 40.71, zoom = 12)
+# leaflet() %>%
+#   addTiles() %>%
+#   setView(-74.00, 40.71, zoom = 12) %>%
+#   addProviderTiles("CartoDB.Positron")
+# lookup_code("New York", "New York")
+# nyc_tracts <- tracts(state = '36', county = c('061','047','081','005','085'))
+# summary(nyc_tracts)
+# 
+# plot(nyc_tracts)
+
+# ### Regions defined for each Polygons
+# ggplot() + 
+#   geom_polygon(data=nyc_neighborhoods_df, aes(x=long, y=lat, group=group))
+# ggmap(nyc_map) + 
+# #adding tiles from Google maps with ggmap  
+#   geom_polygon(data=nyc_neighborhoods_df, aes(x=long, y=lat, group=group), color="blue", fill=NA)
+```
+2-second way of mapping -Interactive mapping by leaflet pckg
+```{r}
+#Interactive map using leaflet pckg
+leaflet(nyc_neighborhoods) %>%
+  addTiles() %>% 
+  addPolygons(popup = ~neighborhood) %>%
+  addProviderTiles("CartoDB.Positron")
+
+```
+prepare and tally the columns for attaching them to the map
+```{r}
+library(scales)
+
+tipsdf<-points_na_rm[points_na_rm$tips >0,]
+pointscoords<-tipsdf[order(tipsdf$neighborhood,tipsdf$lat, tipsdf$lng),]
+meanvalues<-aggregate(pointscoords[, 1:2], list(pointscoords$neighborhood), mean)
+
+tiptally <-tipsdf %>% group_by(neighborhood) %>% tally()
+tiptally<-cbind(tiptally, meanvalues[order(meanvalues$Group.1),])
+map_data <- geo_join(nyc_neighborhoods, tiptally, "neighborhood", "neighborhood")
+ 
+pal <- colorBin(palette = "YlOrRd",
+                domain = range(map_data@data$n, na.rm=T))
+```
+
+
+Using the interactive maps by Leaflet pkg in R.
+```{r}
+
+library(htmltools)
+
+vals <- lapply(seq(nrow(tiptally)), function(i) {
+  paste0( '<p>', tiptally[i, "neighborhood"], '<p></p>', 
+          tiptally[i, "n"] ) 
+})
+rr <- tags$div(
+  HTML('<a img border="0" alt="NYC Tips by Pickup" width="300" height="100"> </a>')
+)  
+leaflet(map_data) %>%
+  addTiles() %>% 
+  addPolygons(fillColor = ~pal(n), weight = 1, smoothFactor = .1) %>% 
+  addMarkers(~lng, ~lat, popup = ~n, label = lapply(vals, htmltools::HTML),clusterOptions = markerClusterOptions(), data = tiptally) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  setView(-73.98, 40.75, zoom = 13) %>%
+  addLegend("bottomright", pal = pal, values = ~n,
+            title = "Number of Tips Received",
+            opacity = 1)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
